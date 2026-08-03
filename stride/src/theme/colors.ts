@@ -12,4 +12,12 @@ export const colors = {
   success: '#34C759',
   warning: '#FF9500',
   danger: '#FF3B30',
+  gym: '#007AFF',
+  study: '#34C759',
+  grades: '#FF9500',
+  partner: '#AF52DE',
+  partnerAvatar: '#E9D5FF',
+  successSoft: 'rgba(52, 199, 89, 0.14)',
+  dangerSoft: 'rgba(255, 59, 48, 0.12)',
+  warningSoft: 'rgba(255, 149, 0, 0.14)',
 } as const;

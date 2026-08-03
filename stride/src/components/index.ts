@@ -10,3 +10,7 @@ export { Chip } from './Chip';
 export { NumberStepper } from './NumberStepper';
 export { OnboardingFooter } from './OnboardingFooter';
 export { OnboardingHeader } from './OnboardingHeader';
+export { DateField } from './DateField';
+export { ProgressRing } from './ProgressRing';
+export { MissionRow, StatusDotRow, WeekPill } from './MissionRow';
+export { MetricCard, CompareCard } from './MetricCard';

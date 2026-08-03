@@ -6,6 +6,9 @@ import {
   useMemo,
   useState,
 } from 'react';
+import { useAuth } from './AuthContext';
+import { useProfile } from './ProfileContext';
+import { persistOnboarding } from '../services/onboardingService';
 
 export type TrackType = 'gym' | 'study';
 
@@ -32,6 +35,9 @@ export type CourseLoad = 3 | 4 | 5;
 
 export type OnboardingData = {
   tracks: TrackType[];
+  semesterName: string;
+  semesterStartDate: string | null;
+  semesterEndDate: string | null;
   gymDaysPerWeek: number | null;
   workoutDays: DayOfWeek[];
   courseLoad: CourseLoad | null;
@@ -39,21 +45,30 @@ export type OnboardingData = {
   courseNames: string[];
 };
 
+type CompleteOnboardingResult = {
+  error: string | null;
+};
+
 type OnboardingContextValue = {
   data: OnboardingData;
-  isComplete: boolean;
   toggleTrack: (track: TrackType) => void;
+  setSemesterName: (name: string) => void;
+  setSemesterStartDate: (date: string) => void;
+  setSemesterEndDate: (date: string) => void;
   setGymDaysPerWeek: (days: number) => void;
   toggleWorkoutDay: (day: DayOfWeek) => void;
   setCourseLoad: (load: CourseLoad) => void;
   setStudySessionsPerWeek: (sessions: number) => void;
   setCourseName: (index: number, name: string) => void;
-  completeOnboarding: () => void;
+  completeOnboarding: () => Promise<CompleteOnboardingResult>;
   resetOnboarding: () => void;
 };
 
 const initialData: OnboardingData = {
   tracks: [],
+  semesterName: '',
+  semesterStartDate: null,
+  semesterEndDate: null,
   gymDaysPerWeek: null,
   workoutDays: [],
   courseLoad: null,
@@ -70,8 +85,9 @@ type OnboardingProviderProps = {
 };
 
 export function OnboardingProvider({ children }: OnboardingProviderProps) {
+  const { user } = useAuth();
+  const { refreshProfile } = useProfile();
   const [data, setData] = useState<OnboardingData>(initialData);
-  const [isComplete, setIsComplete] = useState(false);
 
   const toggleTrack = useCallback((track: TrackType) => {
     setData((prev) => {
@@ -85,11 +101,22 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
     });
   }, []);
 
+  const setSemesterName = useCallback((name: string) => {
+    setData((prev) => ({ ...prev, semesterName: name }));
+  }, []);
+
+  const setSemesterStartDate = useCallback((date: string) => {
+    setData((prev) => ({ ...prev, semesterStartDate: date }));
+  }, []);
+
+  const setSemesterEndDate = useCallback((date: string) => {
+    setData((prev) => ({ ...prev, semesterEndDate: date }));
+  }, []);
+
   const setGymDaysPerWeek = useCallback((days: number) => {
     setData((prev) => ({
       ...prev,
       gymDaysPerWeek: days,
-      // Trim excess selected days if the target count decreases.
       workoutDays: prev.workoutDays.slice(0, days),
     }));
   }, []);
@@ -148,21 +175,34 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
     });
   }, []);
 
-  const completeOnboarding = useCallback(() => {
-    // TODO: Persist onboarding data to Supabase
-    setIsComplete(true);
-  }, []);
+  const completeOnboarding = useCallback(async () => {
+    if (!user) {
+      return { error: 'You must be signed in to finish onboarding.' };
+    }
+
+    try {
+      await persistOnboarding(data);
+      await refreshProfile();
+      setData(initialData);
+      return { error: null };
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to save onboarding.';
+      return { error: message };
+    }
+  }, [user, data, refreshProfile]);
 
   const resetOnboarding = useCallback(() => {
     setData(initialData);
-    setIsComplete(false);
   }, []);
 
   const value = useMemo<OnboardingContextValue>(
     () => ({
       data,
-      isComplete,
       toggleTrack,
+      setSemesterName,
+      setSemesterStartDate,
+      setSemesterEndDate,
       setGymDaysPerWeek,
       toggleWorkoutDay,
       setCourseLoad,
@@ -173,8 +213,10 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
     }),
     [
       data,
-      isComplete,
       toggleTrack,
+      setSemesterName,
+      setSemesterStartDate,
+      setSemesterEndDate,
       setGymDaysPerWeek,
       toggleWorkoutDay,
       setCourseLoad,
@@ -200,4 +242,25 @@ export function useOnboarding() {
   }
 
   return context;
+}
+
+/** Human-readable duration derived from start/end dates. */
+export function getSemesterDurationLabel(
+  startDate: string | null,
+  endDate: string | null,
+): string | null {
+  if (!startDate || !endDate) return null;
+
+  const start = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${endDate}T12:00:00`);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    return null;
+  }
+
+  const dayMs = 1000 * 60 * 60 * 24;
+  const days = Math.round((end.getTime() - start.getTime()) / dayMs) + 1;
+  const weeks = Math.max(1, Math.round(days / 7));
+
+  return `${days} days · about ${weeks} weeks`;
 }

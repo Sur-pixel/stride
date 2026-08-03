@@ -1,11 +1,7 @@
 import { StyleSheet } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
-import {
-  Button,
-  OnboardingHeader,
-  Screen,
-} from '../../components';
+import { Button, OnboardingHeader, Screen } from '../../components';
 import { OnboardingStackParamList } from '../../navigation/onboardingTypes';
 import { spacing } from '../../theme';
 
@@ -18,8 +14,8 @@ export function WelcomeScreen() {
     <Screen contentStyle={styles.content}>
       <OnboardingHeader
         stepLabel="Welcome"
-        title="Let's set up Stride"
-        subtitle="A few quick questions so we can build a plan that fits your week."
+        title="Let's get you started."
+        subtitle="A few quick questions so Stride can build your semester plan."
       />
 
       <Button

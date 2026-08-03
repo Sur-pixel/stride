@@ -12,17 +12,15 @@ export function getNextOnboardingRoute(
     case 'Welcome':
       return 'TrackSelection';
     case 'TrackSelection':
+      return 'Semester';
+    case 'Semester':
+      if (tracksStudy) return 'StudySetup';
       if (tracksGym) return 'GymSetup';
-      if (tracksStudy) return 'StudyLoad';
-      return null;
-    case 'GymSetup':
-      if (tracksStudy) return 'StudyLoad';
       return 'Finish';
-    case 'StudyLoad':
-      return 'StudySessions';
-    case 'StudySessions':
-      return 'CourseNames';
-    case 'CourseNames':
+    case 'StudySetup':
+      if (tracksGym) return 'GymSetup';
+      return 'Finish';
+    case 'GymSetup':
       return 'Finish';
     case 'Finish':
       return null;

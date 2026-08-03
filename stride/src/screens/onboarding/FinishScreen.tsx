@@ -1,32 +1,93 @@
+import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import {
   Button,
   Card,
+  ErrorMessage,
   OnboardingHeader,
   Screen,
 } from '../../components';
-import { useOnboarding } from '../../context/OnboardingContext';
+import {
+  getSemesterDurationLabel,
+  useOnboarding,
+} from '../../context/OnboardingContext';
 import { colors, spacing, typography } from '../../theme';
+
+function formatDisplayDate(value: string | null): string {
+  if (!value) return '—';
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
 
 export function FinishScreen() {
   const { data, completeOnboarding } = useOnboarding();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const tracksLabel = data.tracks
     .map((track) => (track === 'gym' ? 'Gym' : 'Study'))
     .join(' · ');
 
+  const durationLabel = getSemesterDurationLabel(
+    data.semesterStartDate,
+    data.semesterEndDate,
+  );
+
+  const handleFinish = async () => {
+    setError(null);
+    setLoading(true);
+
+    const { error: saveError } = await completeOnboarding();
+
+    if (saveError) {
+      setError(saveError);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+  };
+
   return (
     <Screen contentStyle={styles.content}>
       <OnboardingHeader
-        stepLabel="All set"
+        stepLabel="Finish"
         title="You're ready to stride"
-        subtitle="Your preferences are saved for this session. Home is next."
+        subtitle="Review your setup, then save it to start tracking."
       />
 
       <Card style={styles.card}>
         <Text style={styles.cardTitle}>Your setup</Text>
         <View style={styles.rows}>
           <SummaryRow label="Tracking" value={tracksLabel || '—'} />
+          <SummaryRow
+            label="Semester"
+            value={data.semesterName.trim() || '—'}
+          />
+          <SummaryRow
+            label="Dates"
+            value={`${formatDisplayDate(data.semesterStartDate)} → ${formatDisplayDate(data.semesterEndDate)}`}
+          />
+          {durationLabel ? (
+            <SummaryRow label="Duration" value={durationLabel} />
+          ) : null}
+          {data.tracks.includes('study') ? (
+            <>
+              <SummaryRow
+                label="Courses"
+                value={data.courseNames.filter(Boolean).join(', ') || '—'}
+              />
+              <SummaryRow
+                label="Sessions"
+                value={`${data.studySessionsPerWeek} / week`}
+              />
+            </>
+          ) : null}
           {data.tracks.includes('gym') ? (
             <SummaryRow
               label="Gym days"
@@ -37,28 +98,15 @@ export function FinishScreen() {
               }
             />
           ) : null}
-          {data.tracks.includes('study') ? (
-            <>
-              <SummaryRow
-                label="Courses"
-                value={String(data.courseLoad ?? '—')}
-              />
-              <SummaryRow
-                label="Sessions"
-                value={`${data.studySessionsPerWeek} / week`}
-              />
-              <SummaryRow
-                label="Course names"
-                value={data.courseNames.filter(Boolean).join(', ') || '—'}
-              />
-            </>
-          ) : null}
         </View>
       </Card>
 
+      <ErrorMessage message={error} />
+
       <Button
-        title="Go to Home"
-        onPress={completeOnboarding}
+        title="Finish"
+        onPress={() => void handleFinish()}
+        loading={loading}
         style={styles.button}
       />
     </Screen>
@@ -80,6 +128,7 @@ const styles = StyleSheet.create({
   },
   card: {
     gap: spacing.lg,
+    marginBottom: spacing.lg,
   },
   cardTitle: {
     ...typography.cardTitle,
@@ -100,6 +149,6 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
   button: {
-    marginTop: spacing.xxxl,
+    marginTop: spacing.xl,
   },
 });

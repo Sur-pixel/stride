@@ -1,10 +1,9 @@
 export type OnboardingStackParamList = {
   Welcome: undefined;
   TrackSelection: undefined;
+  Semester: undefined;
+  StudySetup: undefined;
   GymSetup: undefined;
-  StudyLoad: undefined;
-  StudySessions: undefined;
-  CourseNames: undefined;
   Finish: undefined;
 };
 

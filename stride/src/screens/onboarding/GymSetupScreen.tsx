@@ -41,7 +41,7 @@ export function GymSetupScreen() {
       <OnboardingHeader
         stepLabel="Gym"
         title="Plan your training week"
-        subtitle="Choose how often you train, then pick the days."
+        subtitle="Choose how many days you train, then select those weekdays."
       />
 
       <Card style={styles.card}>
