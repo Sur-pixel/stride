@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, radii, spacing, typography } from '../theme';
+import { AnimatedCard } from './AnimatedCard';
 import { ProgressRing } from './ProgressRing';
-import { StatusDotRow } from './MissionRow';
 
 type MetricCardProps = {
   title: string;
@@ -10,6 +10,7 @@ type MetricCardProps = {
   currentLabel: string;
   statusColor: string;
   statusLabel: string;
+  delay?: number;
 };
 
 export function MetricCard({
@@ -19,19 +20,23 @@ export function MetricCard({
   currentLabel,
   statusColor,
   statusLabel,
+  delay = 0,
 }: MetricCardProps) {
   return (
-    <View style={styles.card}>
+    <AnimatedCard delay={delay} style={styles.card}>
       <View style={styles.top}>
-        <ProgressRing percent={percent} color={ringColor} />
+        <ProgressRing percent={percent} color={ringColor} size={104} strokeWidth={10} />
         <View style={styles.meta}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.values}>{currentLabel}</Text>
           <Text style={styles.caption}>Current / Goal</Text>
         </View>
       </View>
-      <StatusDotRow color={statusColor} label={statusLabel} />
-    </View>
+      <View style={styles.statusRow}>
+        <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+        <Text style={styles.statusLabel}>{statusLabel}</Text>
+      </View>
+    </AnimatedCard>
   );
 }
 
@@ -39,23 +44,28 @@ type CompareCardProps = {
   title: string;
   deltaLabel: string;
   deltaTone: 'ahead' | 'behind' | 'neutral';
+  deltaPercent: number | null;
   youPercent: number;
-  partnerPercent: number;
+  partnerPercent: number | null;
   youColor: string;
   partnerColor: string;
   partnerName: string;
+  delay?: number;
 };
 
 export function CompareCard({
   title,
   deltaLabel,
   deltaTone,
+  deltaPercent,
   youPercent,
   partnerPercent,
   youColor,
   partnerColor,
   partnerName,
+  delay = 0,
 }: CompareCardProps) {
+  const showDelta = deltaPercent !== null;
   const badgeBg =
     deltaTone === 'ahead'
       ? colors.successSoft
@@ -68,20 +78,23 @@ export function CompareCard({
       : deltaTone === 'behind'
         ? colors.danger
         : colors.textSecondary;
+  const sign = deltaTone === 'ahead' ? '+' : deltaTone === 'behind' ? '−' : '';
 
   return (
-    <View style={styles.card}>
+    <AnimatedCard delay={delay} style={styles.card}>
       <View style={styles.compareHeader}>
         <View style={styles.compareCopy}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.compareSubtitle}>{deltaLabel}</Text>
         </View>
-        <View style={[styles.badge, { backgroundColor: badgeBg }]}>
-          <Text style={[styles.badgeText, { color: badgeColor }]}>
-            {deltaTone === 'ahead' ? '+' : deltaTone === 'behind' ? '' : ''}
-            {Math.abs(youPercent - partnerPercent)}%
-          </Text>
-        </View>
+        {showDelta ? (
+          <View style={[styles.badge, { backgroundColor: badgeBg }]}>
+            <Text style={[styles.badgeText, { color: badgeColor }]}>
+              {sign}
+              {Math.abs(deltaPercent ?? 0)}%
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View style={styles.compareRings}>
         <View style={styles.compareItem}>
@@ -89,25 +102,27 @@ export function CompareCard({
           <Text style={styles.compareLabel}>YOU</Text>
         </View>
         <View style={styles.compareItem}>
-          <ProgressRing percent={partnerPercent} color={partnerColor} size={96} />
+          {partnerPercent !== null ? (
+            <ProgressRing
+              percent={partnerPercent}
+              color={partnerColor}
+              size={96}
+            />
+          ) : (
+            <View style={styles.placeholderRing}>
+              <Text style={styles.placeholderText}>—</Text>
+            </View>
+          )}
           <Text style={styles.compareLabel}>{partnerName.toUpperCase()}</Text>
         </View>
       </View>
-    </View>
+    </AnimatedCard>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.xxl,
-    padding: spacing.xxl,
     gap: spacing.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 3,
   },
   top: {
     flexDirection: 'row',
@@ -116,7 +131,7 @@ const styles = StyleSheet.create({
   },
   meta: {
     flex: 1,
-    gap: 4,
+    gap: 2,
   },
   title: {
     ...typography.cardTitle,
@@ -124,11 +139,26 @@ const styles = StyleSheet.create({
   },
   values: {
     ...typography.bodyMedium,
-    color: colors.textPrimary,
+    color: colors.textSecondary,
   },
   caption: {
     ...typography.caption,
-    color: colors.textSecondary,
+    color: colors.textTertiary,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radii.full,
+  },
+  statusLabel: {
+    ...typography.bodyMedium,
+    fontWeight: '600',
+    color: colors.textPrimary,
   },
   compareHeader: {
     flexDirection: 'row',
@@ -165,5 +195,19 @@ const styles = StyleSheet.create({
   compareLabel: {
     ...typography.section,
     color: colors.textSecondary,
+  },
+  placeholderRing: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    borderWidth: 9,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  placeholderText: {
+    ...typography.title,
+    color: colors.textTertiary,
   },
 });

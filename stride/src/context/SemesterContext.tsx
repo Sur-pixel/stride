@@ -9,30 +9,34 @@ import {
 } from 'react';
 import { useProfile } from './ProfileContext';
 import {
-  ActiveSemesterBundle,
-  fetchActiveSemesterBundle,
-  upsertDailyProgress,
+  completeStudySession,
+  fetchSemesterContext,
+  SemesterBundle,
+  SemesterContext as SemesterContextData,
+  setGymCompleted,
+  undoStudySession,
 } from '../services/semesterService';
 import {
   buildProgressSnapshot,
   ProgressSnapshot,
   toIsoDate,
 } from '../utils/progressMath';
-import { DailyProgress } from '../types/database';
+import { DailyProgress, Semester } from '../types/database';
 
 type SemesterContextValue = {
-  bundle: ActiveSemesterBundle | null;
+  bundle: SemesterBundle | null;
   snapshot: ProgressSnapshot | null;
+  upcoming: Semester | null;
+  past: Semester | null;
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   setGymCompletedToday: (completed: boolean) => Promise<void>;
-  setStudySessionsToday: (count: number) => Promise<void>;
+  completeSession: (courseId: string) => Promise<void>;
+  undoSession: (courseId: string) => Promise<void>;
 };
 
-const SemesterContext = createContext<SemesterContextValue | undefined>(
-  undefined,
-);
+const SemesterCtx = createContext<SemesterContextValue | undefined>(undefined);
 
 type SemesterProviderProps = {
   children: ReactNode;
@@ -40,13 +44,13 @@ type SemesterProviderProps = {
 
 export function SemesterProvider({ children }: SemesterProviderProps) {
   const { profile } = useProfile();
-  const [bundle, setBundle] = useState<ActiveSemesterBundle | null>(null);
+  const [ctx, setCtx] = useState<SemesterContextData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!profile?.id || !profile.onboarding_complete) {
-      setBundle(null);
+      setCtx(null);
       setError(null);
       setIsLoading(false);
       return;
@@ -56,13 +60,13 @@ export function SemesterProvider({ children }: SemesterProviderProps) {
     setError(null);
 
     try {
-      const next = await fetchActiveSemesterBundle(profile.id);
-      setBundle(next);
+      const next = await fetchSemesterContext(profile.id);
+      setCtx(next);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to load semester data.';
       setError(message);
-      setBundle(null);
+      setCtx(null);
     } finally {
       setIsLoading(false);
     }
@@ -73,81 +77,92 @@ export function SemesterProvider({ children }: SemesterProviderProps) {
   }, [refresh]);
 
   const replaceProgressRow = useCallback((row: DailyProgress) => {
-    setBundle((prev) => {
-      if (!prev) return prev;
-      const without = prev.progress.filter((item) => item.date !== row.date);
+    setCtx((prev) => {
+      if (!prev?.current) return prev;
+      const without = prev.current.progress.filter(
+        (item) => item.date !== row.date,
+      );
       return {
         ...prev,
-        progress: [...without, row].sort((a, b) => a.date.localeCompare(b.date)),
+        current: {
+          ...prev.current,
+          progress: [...without, row].sort((a, b) =>
+            a.date.localeCompare(b.date),
+          ),
+        },
       };
     });
   }, []);
 
   const setGymCompletedToday = useCallback(
     async (completed: boolean) => {
-      if (!bundle) return;
+      if (!ctx?.current) return;
       const today = toIsoDate(new Date());
-      const existing = bundle.progress.find((row) => row.date === today);
-      const row = await upsertDailyProgress({
-        semesterId: bundle.semester.id,
-        date: today,
-        studySessionsCompleted: existing?.study_sessions_completed ?? 0,
-        gymCompleted: completed,
-      });
+      const row = await setGymCompleted(
+        ctx.current.semester.id,
+        today,
+        completed,
+      );
       replaceProgressRow(row);
     },
-    [bundle, replaceProgressRow],
+    [ctx?.current, replaceProgressRow],
   );
 
-  const setStudySessionsToday = useCallback(
-    async (count: number) => {
-      if (!bundle) return;
-      const today = toIsoDate(new Date());
-      const existing = bundle.progress.find((row) => row.date === today);
-      const row = await upsertDailyProgress({
-        semesterId: bundle.semester.id,
-        date: today,
-        studySessionsCompleted: Math.max(0, count),
-        gymCompleted: existing?.gym_completed ?? false,
-      });
-      replaceProgressRow(row);
+  const completeSession = useCallback(
+    async (courseId: string) => {
+      await completeStudySession(courseId);
+      await refresh();
     },
-    [bundle, replaceProgressRow],
+    [refresh],
+  );
+
+  const undoSession = useCallback(
+    async (courseId: string) => {
+      await undoStudySession(courseId);
+      await refresh();
+    },
+    [refresh],
   );
 
   const snapshot = useMemo(() => {
-    if (!bundle) return null;
-    return buildProgressSnapshot(bundle);
-  }, [bundle]);
+    if (!ctx?.current) return null;
+    return buildProgressSnapshot(ctx.current);
+  }, [ctx?.current]);
 
   const value = useMemo<SemesterContextValue>(
     () => ({
-      bundle,
+      bundle: ctx?.current ?? null,
       snapshot,
+      upcoming: ctx?.upcoming ?? null,
+      past: ctx?.past ?? null,
       isLoading,
       error,
       refresh,
       setGymCompletedToday,
-      setStudySessionsToday,
+      completeSession,
+      undoSession,
     }),
     [
-      bundle,
+      ctx?.current,
+      ctx?.upcoming,
+      ctx?.past,
       snapshot,
       isLoading,
       error,
       refresh,
       setGymCompletedToday,
-      setStudySessionsToday,
+      completeSession,
+      undoSession,
     ],
   );
 
   return (
-    <SemesterContext.Provider value={value}>{children}</SemesterContext.Provider>
+    <SemesterCtx.Provider value={value}>{children}</SemesterCtx.Provider>
   );
 }
 
 export function useSemester() {
-  const context = useContext(SemesterContext);
+  const context = useContext(SemesterCtx);
   if (!context) {
     throw new Error('useSemester must be used within a SemesterProvider');
   }

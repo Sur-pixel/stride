@@ -1,12 +1,18 @@
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Screen } from '../../components';
+import { Ionicons } from '@expo/vector-icons';
+import { AnimatedCard, Screen } from '../../components';
 import { useAuth } from '../../context/AuthContext';
 import { useProfile } from '../../context/ProfileContext';
 import { useSemester } from '../../context/SemesterContext';
+import { useInvitations } from '../../context/InvitationsContext';
+import {
+  fetchPartnerProfile,
+} from '../../services/semesterService';
+import { unpairPartner } from '../../services/invitationService';
 import { colors, radii, spacing, typography } from '../../theme';
-import { weeklyStudyTarget } from '../../utils/progressMath';
+import { Profile } from '../../types/database';
 
 const PREFS_KEY = 'stride.settings.prefs';
 
@@ -24,7 +30,10 @@ export function SettingsTabScreen() {
   const { signOut } = useAuth();
   const { profile } = useProfile();
   const { bundle } = useSemester();
+  const { refresh: refreshInvitations } = useInvitations();
   const [prefs, setPrefs] = useState<Prefs>(defaultPrefs);
+  const [partner, setPartner] = useState<Profile | null>(null);
+  const [unpairing, setUnpairing] = useState(false);
 
   useEffect(() => {
     void AsyncStorage.getItem(PREFS_KEY).then((raw) => {
@@ -32,10 +41,20 @@ export function SettingsTabScreen() {
       try {
         setPrefs({ ...defaultPrefs, ...(JSON.parse(raw) as Prefs) });
       } catch {
-        // ignore
+        // ignore corrupt prefs
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (!profile?.partner_id) {
+      setPartner(null);
+      return;
+    }
+    void fetchPartnerProfile(profile.partner_id)
+      .then(setPartner)
+      .catch(() => setPartner(null));
+  }, [profile?.partner_id]);
 
   const updatePref = async (key: keyof Prefs, value: boolean) => {
     const next = { ...prefs, [key]: value };
@@ -43,38 +62,103 @@ export function SettingsTabScreen() {
     await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(next));
   };
 
-  const gymGoal = bundle?.gymSchedule
-    ? `${bundle.gymSchedule.days_per_week} / week`
-    : 'Not tracking';
-  const studyGoal = bundle?.courses.length
-    ? `${weeklyStudyTarget(bundle.courses)} sessions / week`
-    : 'Not tracking';
+  const weeklyStudySessions = useMemo(() => {
+    if (!bundle) return 0;
+    const total = bundle.courses.reduce((s, c) => s + c.total_sessions, 0);
+    if (total === 0) return 0;
+    const start = new Date(`${bundle.semester.start_date}T12:00:00`);
+    const end = new Date(`${bundle.semester.end_date}T12:00:00`);
+    const dayMs = 1000 * 60 * 60 * 24;
+    const days = Math.round((end.getTime() - start.getTime()) / dayMs) + 1;
+    const weeks = Math.max(1, Math.ceil(days / 7));
+    return Math.round(total / weeks);
+  }, [bundle]);
+
+  const hasGym = Boolean(bundle?.gymSchedule);
+  const hasStudy = Boolean(bundle?.courses.length);
+
+  const partnerFirstName = partner?.name?.split(' ')[0] ?? null;
+  const shareLabel = partnerFirstName
+    ? `Share pace with ${partnerFirstName}`
+    : 'Share pace with partner';
+
+  const handleUnpair = () => {
+    Alert.alert(
+      'Unpair partner?',
+      'You will lose the shared dashboard until you pair again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unpair',
+          style: 'destructive',
+          onPress: async () => {
+            setUnpairing(true);
+            try {
+              await unpairPartner();
+              await refreshInvitations();
+            } finally {
+              setUnpairing(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <Screen contentStyle={styles.content}>
       <Text style={styles.eyebrow}>YOUR SETUP</Text>
       <Text style={styles.title}>Settings</Text>
 
-      <View style={styles.card}>
+      <AnimatedCard delay={40} style={styles.card}>
         <Text style={styles.sectionTitle}>Weekly goals</Text>
-        {bundle?.gymSchedule ? (
+        {hasGym && bundle?.gymSchedule ? (
           <SettingsRow
             tint={colors.gym}
             label="Gym"
-            value={gymGoal}
-            last={!bundle.courses.length}
+            value={`${bundle.gymSchedule.days_per_week} / week`}
+            last={!hasStudy}
           />
         ) : null}
-        {bundle?.courses.length ? (
-          <SettingsRow tint={colors.study} label="Study" value={studyGoal} last />
+        {hasStudy ? (
+          <SettingsRow
+            tint={colors.study}
+            label="Study"
+            value={`${weeklyStudySessions} sessions / week`}
+            last
+          />
         ) : null}
-        {!bundle?.gymSchedule && !bundle?.courses.length ? (
+        {!hasGym && !hasStudy ? (
           <Text style={styles.empty}>No weekly goals for this semester.</Text>
         ) : null}
-        {/* Grades goal omitted — not present in schema */}
-      </View>
+      </AnimatedCard>
 
-      <View style={styles.card}>
+      {hasStudy && bundle ? (
+        <AnimatedCard delay={80} style={styles.card}>
+          <Text style={styles.sectionTitle}>Course load</Text>
+          {bundle.courses.map((course, i) => (
+            <View
+              key={course.id}
+              style={[
+                styles.courseRow,
+                i < bundle.courses.length - 1 ? styles.rowBorder : null,
+              ]}
+            >
+              <View style={styles.rankBadge}>
+                <Text style={styles.rankText}>#{course.difficulty_rank}</Text>
+              </View>
+              <View style={styles.courseCopy}>
+                <Text style={styles.rowLabel}>{course.name}</Text>
+                <Text style={styles.courseSub}>
+                  {course.sessions_completed} / {course.total_sessions} sessions
+                </Text>
+              </View>
+            </View>
+          ))}
+        </AnimatedCard>
+      ) : null}
+
+      <AnimatedCard delay={120} style={styles.card}>
         <Text style={styles.sectionTitle}>Preferences</Text>
         <PreferenceRow
           title="Daily reminder"
@@ -83,47 +167,77 @@ export function SettingsTabScreen() {
           onValueChange={(value) => void updatePref('dailyReminder', value)}
         />
         <PreferenceRow
-          title={
-            profile?.partner_id
-              ? 'Share pace with partner'
-              : 'Share pace with partner'
-          }
+          title={shareLabel}
           subtitle="Percentages only"
           value={prefs.sharePace}
           onValueChange={(value) => void updatePref('sharePace', value)}
           last
         />
-      </View>
+      </AnimatedCard>
 
-      <View style={styles.card}>
+      <AnimatedCard delay={160} style={styles.card}>
         <Text style={styles.sectionTitle}>Partner</Text>
         {profile?.partner_id ? (
-          <View style={styles.partnerRow}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>P</Text>
+          <>
+            <View style={styles.partnerRow}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>
+                  {(partnerFirstName?.[0] ?? 'P').toUpperCase()}
+                </Text>
+              </View>
+              <View style={styles.partnerCopy}>
+                <Text style={styles.partnerName}>
+                  {partner?.name ?? 'Connected partner'}
+                </Text>
+                <Text style={styles.partnerMeta}>
+                  {partner?.created_at
+                    ? `Paired since ${formatPairedSince(partner.created_at)}`
+                    : 'Accountability partner'}
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.textTertiary}
+              />
             </View>
-            <View style={styles.partnerCopy}>
-              <Text style={styles.partnerName}>Connected partner</Text>
-              <Text style={styles.partnerMeta}>
-                Partner ID linked on your profile
+            <Pressable
+              onPress={handleUnpair}
+              disabled={unpairing}
+              style={({ pressed }) => [
+                styles.unpair,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              <Text style={styles.unpairText}>
+                {unpairing ? 'Unpairing…' : 'Unpair partner'}
               </Text>
-            </View>
-          </View>
+            </Pressable>
+          </>
         ) : (
           <Text style={styles.empty}>
-            No partner yet. Invite someone from the Friend tab.
+            No partner yet. Invite one from the Friend tab.
           </Text>
         )}
-      </View>
+      </AnimatedCard>
 
       <Pressable
         onPress={() => void signOut()}
-        style={({ pressed }) => [styles.signOut, pressed ? styles.pressed : null]}
+        style={({ pressed }) => [
+          styles.signOut,
+          pressed ? styles.pressed : null,
+        ]}
       >
         <Text style={styles.signOutText}>Sign Out</Text>
       </Pressable>
     </Screen>
   );
+}
+
+function formatPairedSince(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'recently';
+  return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 }
 
 function SettingsRow({
@@ -139,12 +253,12 @@ function SettingsRow({
 }) {
   return (
     <View style={[styles.row, last ? null : styles.rowBorder]}>
-      <View style={[styles.icon, { backgroundColor: `${tint}22` }]}>
-        <View style={[styles.iconDot, { backgroundColor: tint }]} />
+      <View style={styles.rowDot}>
+        <View style={[styles.rowDotInner, { backgroundColor: tint }]} />
       </View>
       <Text style={styles.rowLabel}>{label}</Text>
       <Text style={styles.rowValue}>{value}</Text>
-      <Text style={styles.chevron}>›</Text>
+      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
     </View>
   );
 }
@@ -173,6 +287,7 @@ function PreferenceRow({
         onValueChange={onValueChange}
         trackColor={{ false: colors.border, true: colors.textPrimary }}
         thumbColor={colors.surface}
+        ios_backgroundColor={colors.border}
       />
     </View>
   );
@@ -193,20 +308,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.xxl,
-    paddingHorizontal: spacing.xxl,
+    padding: spacing.xxl,
     paddingVertical: spacing.xl,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 3,
   },
   sectionTitle: {
-    ...typography.label,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
+    ...typography.cardTitle,
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
   },
   row: {
     flexDirection: 'row',
@@ -218,20 +326,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  icon: {
-    width: 36,
-    height: 36,
-    borderRadius: radii.full,
+  rowDot: {
+    width: 12,
+    height: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconDot: {
-    width: 12,
-    height: 12,
+  rowDotInner: {
+    width: 10,
+    height: 10,
     borderRadius: radii.full,
   },
   rowLabel: {
     ...typography.bodyMedium,
+    fontWeight: '700',
     color: colors.textPrimary,
     flex: 1,
   },
@@ -239,10 +347,32 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.textSecondary,
   },
-  chevron: {
-    ...typography.title,
-    color: colors.textTertiary,
-    marginLeft: spacing.xs,
+  courseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.lg,
+  },
+  rankBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.full,
+    backgroundColor: colors.inputBackground,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rankText: {
+    ...typography.caption,
+    color: colors.textPrimary,
+    fontWeight: '700',
+  },
+  courseCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  courseSub: {
+    ...typography.caption,
+    color: colors.textSecondary,
   },
   prefRow: {
     flexDirection: 'row',
@@ -295,24 +425,28 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.textSecondary,
   },
+  unpair: {
+    alignSelf: 'flex-start',
+    paddingTop: spacing.md,
+  },
+  unpairText: {
+    ...typography.caption,
+    fontWeight: '600',
+    color: colors.danger,
+  },
   empty: {
     ...typography.body,
     color: colors.textSecondary,
     paddingVertical: spacing.sm,
   },
   signOut: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.xxl,
-    paddingVertical: spacing.lg,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 3,
+    alignSelf: 'center',
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xxl,
   },
   pressed: {
-    opacity: 0.85,
+    opacity: 0.6,
   },
   signOutText: {
     ...typography.button,

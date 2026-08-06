@@ -1,9 +1,17 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { Screen } from '../../components';
+import { AnimatedCard, Screen } from '../../components';
 import { MetricCard } from '../../components/MetricCard';
-import { StatusDotRow } from '../../components/MissionRow';
 import { useSemester } from '../../context/SemesterContext';
 import { colors, radii, spacing, typography } from '../../theme';
+import type { CoursePace, PaceMetric } from '../../utils/progressMath';
+
+const COURSE_COLORS = [
+  colors.study,
+  colors.gym,
+  colors.grades,
+  colors.partner,
+  colors.accent,
+];
 
 export function ProgressTabScreen() {
   const { bundle, snapshot, isLoading, error } = useSemester();
@@ -21,13 +29,14 @@ export function ProgressTabScreen() {
       <Screen>
         <Text style={styles.errorTitle}>Progress unavailable</Text>
         <Text style={styles.errorBody}>
-          {error ?? 'No active semester found.'}
+          {error ?? 'No active semester right now.'}
         </Text>
       </Screen>
     );
   }
 
-  const { timeline, gym, study } = snapshot;
+  const { timeline, gym, perCourse } = snapshot;
+  let cardDelay = 40;
 
   return (
     <Screen contentStyle={styles.content}>
@@ -40,54 +49,78 @@ export function ProgressTabScreen() {
 
       {gym ? (
         <MetricCard
+          delay={(cardDelay += 40)}
           title="Gym"
           percent={gym.percent}
           ringColor={colors.gym}
           currentLabel={`${gym.current} / ${gym.goal}`}
-          statusColor={gym.tone === 'behind' ? colors.danger : colors.success}
+          statusColor={statusColorFor(gym.tone)}
           statusLabel={gym.statusLabel}
         />
       ) : null}
 
-      {study ? (
+      {perCourse.map((coursePace, i) => (
         <MetricCard
-          title="Study"
-          percent={study.percent}
-          ringColor={colors.study}
-          currentLabel={`${study.current} / ${study.goal} sessions`}
-          statusColor={study.tone === 'behind' ? colors.danger : colors.success}
-          statusLabel={study.statusLabel}
+          key={coursePace.course.id}
+          delay={(cardDelay += 40)}
+          title={coursePace.course.name}
+          percent={coursePace.percent}
+          ringColor={COURSE_COLORS[i % COURSE_COLORS.length]}
+          currentLabel={`${coursePace.course.sessions_completed} / ${coursePace.course.total_sessions} sessions`}
+          statusColor={statusColorFor(coursePace.tone)}
+          statusLabel={coursePace.statusLabel}
         />
-      ) : null}
+      ))}
 
-      {/* Grades are not in the current schema — keep layout space only if added later. */}
-
-      <View style={styles.card}>
+      <AnimatedCard delay={(cardDelay += 40)} style={styles.paceCard}>
         <Text style={styles.cardTitle}>Pace</Text>
         <View style={styles.paceList}>
           {gym ? (
-            <View style={styles.paceItem}>
-              <StatusDotRow
-                color={gym.tone === 'behind' ? colors.danger : colors.success}
-                label="Gym"
-                emphasis
-              />
-              <Text style={styles.paceSub}>{gym.statusLabel}</Text>
-            </View>
+            <PaceRow
+              color={statusColorFor(gym.tone)}
+              label="Gym"
+              sub={gym.statusLabel}
+            />
           ) : null}
-          {study ? (
-            <View style={styles.paceItem}>
-              <StatusDotRow
-                color={study.tone === 'behind' ? colors.danger : colors.success}
-                label="Study"
-                emphasis
-              />
-              <Text style={styles.paceSub}>{study.statusLabel}</Text>
-            </View>
-          ) : null}
+          {perCourse.map((coursePace, i) => (
+            <PaceRow
+              key={coursePace.course.id}
+              color={COURSE_COLORS[i % COURSE_COLORS.length]}
+              label={coursePace.course.name}
+              sub={coursePace.statusLabel}
+            />
+          ))}
         </View>
-      </View>
+      </AnimatedCard>
     </Screen>
+  );
+}
+
+function statusColorFor(
+  tone: PaceMetric['tone'] | CoursePace['tone'],
+): string {
+  if (tone === 'behind') return colors.danger;
+  if (tone === 'ahead') return colors.success;
+  return colors.success;
+}
+
+function PaceRow({
+  color,
+  label,
+  sub,
+}: {
+  color: string;
+  label: string;
+  sub: string;
+}) {
+  return (
+    <View style={styles.paceRow}>
+      <View style={[styles.paceDot, { backgroundColor: color }]} />
+      <View style={styles.paceCopy}>
+        <Text style={styles.paceLabel}>{label}</Text>
+        <Text style={styles.paceSub}>{sub}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -115,16 +148,8 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: spacing.sm,
   },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.xxl,
-    padding: spacing.xxl,
+  paceCard: {
     gap: spacing.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 3,
   },
   cardTitle: {
     ...typography.cardTitle,
@@ -133,13 +158,29 @@ const styles = StyleSheet.create({
   paceList: {
     gap: spacing.lg,
   },
-  paceItem: {
-    gap: spacing.xs,
+  paceRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+  },
+  paceDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radii.full,
+    marginTop: 8,
+  },
+  paceCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  paceLabel: {
+    ...typography.bodyMedium,
+    fontWeight: '700',
+    color: colors.textPrimary,
   },
   paceSub: {
     ...typography.caption,
     color: colors.textSecondary,
-    marginLeft: spacing.lg + 8,
   },
   errorTitle: {
     ...typography.title,

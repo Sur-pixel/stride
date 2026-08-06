@@ -1,9 +1,10 @@
 import { DayOfWeek, OnboardingData } from '../context/OnboardingContext';
 import { supabase } from '../lib/supabase';
 
-type CoursePayload = {
+type RankedCoursePayload = {
   name: string;
-  target_study_sessions_per_week: number;
+  difficulty_rank: number;
+  total_sessions: number;
 };
 
 type GymSchedulePayload = {
@@ -17,23 +18,49 @@ type GymSchedulePayload = {
   sunday: boolean;
 };
 
-/** Split weekly sessions across courses; each course gets at least 1 (schema CHECK). */
-export function distributeStudySessions(
-  totalSessions: number,
-  courseCount: number,
+/**
+ * Difficulty-weighted allocation. Ranks are 1-indexed with 1 = hardest.
+ * Weight(c) = (N - rank + 1) so hardest course gets weight N, easiest gets 1.
+ * Returns integer sessions per course that sum exactly to `weeklyTotal`,
+ * with every course getting at least 1 session per week.
+ */
+export function distributeWeeklySessionsByDifficulty(
+  ranks: number[],
+  weeklyTotal: number,
 ): number[] {
-  if (courseCount <= 0) return [];
+  const n = ranks.length;
+  if (n === 0) return [];
 
-  const safeTotal = Math.max(totalSessions, courseCount);
-  const base = Math.floor(safeTotal / courseCount);
-  const remainder = safeTotal % courseCount;
+  const minTotal = n;
+  const safeTotal = Math.max(weeklyTotal, minTotal);
+  const budget = safeTotal - minTotal;
 
-  return Array.from({ length: courseCount }, (_, index) =>
-    Math.max(1, base + (index < remainder ? 1 : 0)),
-  );
+  const weights = ranks.map((rank) => n - rank + 1);
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+
+  const raw = weights.map((w) => (budget * w) / weightSum);
+  const floors = raw.map((r) => Math.floor(r));
+  let allocated = floors.reduce((a, b) => a + b, 0);
+
+  // Distribute remainder to courses with the largest fractional part,
+  // breaking ties by heavier weight (harder course wins).
+  const remainders = raw
+    .map((r, i) => ({ i, frac: r - floors[i], weight: weights[i] }))
+    .sort((a, b) => b.frac - a.frac || b.weight - a.weight);
+
+  const extra = [...floors];
+  for (const item of remainders) {
+    if (allocated >= budget) break;
+    extra[item.i] += 1;
+    allocated += 1;
+  }
+
+  return extra.map((x) => x + 1);
 }
 
-function dayFlags(workoutDays: DayOfWeek[]): Omit<GymSchedulePayload, 'days_per_week'> {
+function dayFlags(
+  workoutDays: DayOfWeek[],
+): Omit<GymSchedulePayload, 'days_per_week'> {
   return {
     monday: workoutDays.includes('Mon'),
     tuesday: workoutDays.includes('Tue'),
@@ -45,26 +72,41 @@ function dayFlags(workoutDays: DayOfWeek[]): Omit<GymSchedulePayload, 'days_per_
   };
 }
 
-function buildCoursesPayload(data: OnboardingData): CoursePayload[] | null {
-  if (!data.tracks.includes('study')) {
-    return null;
-  }
+function totalWeeksBetween(startDate: string, endDate: string): number {
+  const start = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${endDate}T12:00:00`);
+  const dayMs = 1000 * 60 * 60 * 24;
+  const days = Math.round((end.getTime() - start.getTime()) / dayMs) + 1;
+  return Math.max(1, Math.ceil(days / 7));
+}
 
-  const targets = distributeStudySessions(
+function buildRankedCoursesPayload(
+  data: OnboardingData,
+): RankedCoursePayload[] | null {
+  if (!data.tracks.includes('study')) return null;
+  if (!data.semesterStartDate || !data.semesterEndDate) return null;
+
+  const totalWeeks = totalWeeksBetween(
+    data.semesterStartDate,
+    data.semesterEndDate,
+  );
+
+  // Rank is the course's position in the ordered list, 1 = hardest.
+  const ranks = data.courseNames.map((_, i) => i + 1);
+  const weekly = distributeWeeklySessionsByDifficulty(
+    ranks,
     data.studySessionsPerWeek,
-    data.courseNames.length,
   );
 
   return data.courseNames.map((name, index) => ({
     name: name.trim(),
-    target_study_sessions_per_week: targets[index],
+    difficulty_rank: ranks[index],
+    total_sessions: Math.max(1, weekly[index] * totalWeeks),
   }));
 }
 
 function buildGymPayload(data: OnboardingData): GymSchedulePayload | null {
-  if (!data.tracks.includes('gym') || !data.gymDaysPerWeek) {
-    return null;
-  }
+  if (!data.tracks.includes('gym') || !data.gymDaysPerWeek) return null;
 
   return {
     days_per_week: data.gymDaysPerWeek,
@@ -72,11 +114,6 @@ function buildGymPayload(data: OnboardingData): GymSchedulePayload | null {
   };
 }
 
-/**
- * Persists onboarding via complete_onboarding RPC.
- * The database function runs in a single transaction so semester, courses,
- * gym schedule, and onboarding_complete either all commit or all roll back.
- */
 export async function persistOnboarding(data: OnboardingData): Promise<void> {
   const tracksGym = data.tracks.includes('gym');
   const tracksStudy = data.tracks.includes('study');
@@ -110,16 +147,21 @@ export async function persistOnboarding(data: OnboardingData): Promise<void> {
     if (data.courseNames.some((name) => !name.trim())) {
       throw new Error('Every course needs a name.');
     }
+    if (data.studySessionsPerWeek < data.courseNames.length) {
+      throw new Error(
+        `Choose at least ${data.courseNames.length} weekly sessions so each course gets one.`,
+      );
+    }
   }
 
-  const courses = buildCoursesPayload(data);
+  const rankedCourses = buildRankedCoursesPayload(data);
   const gymSchedule = buildGymPayload(data);
 
   const { error } = await supabase.rpc('complete_onboarding', {
     p_semester_name: data.semesterName.trim(),
     p_start_date: data.semesterStartDate,
     p_end_date: data.semesterEndDate,
-    p_courses: courses,
+    p_ranked_courses: rankedCourses,
     p_gym_schedule: gymSchedule,
   });
 

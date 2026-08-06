@@ -5,6 +5,7 @@ import { AuthProvider } from './src/context/AuthContext';
 import { OnboardingProvider } from './src/context/OnboardingContext';
 import { ProfileProvider } from './src/context/ProfileContext';
 import { SemesterProvider } from './src/context/SemesterContext';
+import { InvitationsProvider } from './src/context/InvitationsContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
 
 export default function App() {
@@ -14,10 +15,12 @@ export default function App() {
         <ProfileProvider>
           <OnboardingProvider>
             <SemesterProvider>
-              <NavigationContainer>
-                <StatusBar style="dark" />
-                <RootNavigator />
-              </NavigationContainer>
+              <InvitationsProvider>
+                <NavigationContainer>
+                  <StatusBar style="dark" />
+                  <RootNavigator />
+                </NavigationContainer>
+              </InvitationsProvider>
             </SemesterProvider>
           </OnboardingProvider>
         </ProfileProvider>

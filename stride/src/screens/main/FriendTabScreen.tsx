@@ -1,202 +1,239 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import {
+  AnimatedCard,
   Button,
   ErrorMessage,
-  InfoMessage,
   Screen,
   TextInput,
 } from '../../components';
 import { CompareCard } from '../../components/MetricCard';
 import { useProfile } from '../../context/ProfileContext';
 import { useSemester } from '../../context/SemesterContext';
-import { fetchPartnerProfile } from '../../services/semesterService';
+import { useInvitations } from '../../context/InvitationsContext';
+import {
+  fetchPartnerCurrentBundle,
+  fetchPartnerProfile,
+  SemesterBundle,
+} from '../../services/semesterService';
 import { colors, radii, spacing, typography } from '../../theme';
 import { Profile } from '../../types/database';
-
-const INVITE_STORAGE_KEY = 'stride.partnerInvite';
-
-type InviteDraft = {
-  email: string;
-  sentAt: string;
-};
+import { buildProgressSnapshot, ProgressSnapshot } from '../../utils/progressMath';
 
 export function FriendTabScreen() {
   const { profile } = useProfile();
   const { snapshot, bundle } = useSemester();
-  const [email, setEmail] = useState('');
-  const [invite, setInvite] = useState<InviteDraft | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const [partner, setPartner] = useState<Profile | null>(null);
-  const [partnerError, setPartnerError] = useState<string | null>(null);
+  const {
+    incomingPending,
+    outgoingPending,
+    send,
+    accept,
+    decline,
+    cancel,
+  } = useInvitations();
 
-  useEffect(() => {
-    void AsyncStorage.getItem(INVITE_STORAGE_KEY).then((raw) => {
-      if (!raw) return;
-      try {
-        setInvite(JSON.parse(raw) as InviteDraft);
-      } catch {
-        // ignore corrupt local invite state
-      }
-    });
-  }, []);
+  const [email, setEmail] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+
+  const [partner, setPartner] = useState<Profile | null>(null);
+  const [partnerBundle, setPartnerBundle] = useState<SemesterBundle | null>(null);
+  const [partnerLoading, setPartnerLoading] = useState(false);
+  const [partnerError, setPartnerError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!profile?.partner_id) {
       setPartner(null);
+      setPartnerBundle(null);
       setPartnerError(null);
       return;
     }
 
-    void fetchPartnerProfile(profile.partner_id)
-      .then((row) => {
-        setPartner(row);
-        setPartnerError(null);
+    setPartnerLoading(true);
+    setPartnerError(null);
+    Promise.all([
+      fetchPartnerProfile(profile.partner_id),
+      fetchPartnerCurrentBundle(profile.partner_id),
+    ])
+      .then(([p, b]) => {
+        setPartner(p);
+        setPartnerBundle(b);
       })
       .catch((err) => {
-        setPartner(null);
         setPartnerError(
-          err instanceof Error
-            ? err.message
-            : 'Partner profile is not readable yet.',
+          err instanceof Error ? err.message : 'Could not load partner data.',
         );
-      });
+      })
+      .finally(() => setPartnerLoading(false));
   }, [profile?.partner_id]);
 
-  const handleSendInvite = async () => {
+  const handleSend = async () => {
     setError(null);
-    setInfo(null);
-
     const trimmed = email.trim().toLowerCase();
     if (!trimmed || !trimmed.includes('@')) {
       setError('Enter a valid email address.');
       return;
     }
-
     setSending(true);
-
-    // TODO: Backend invitation — create partner_invitations table + email/RPC.
-    // Persist a local waiting state until invitations are implemented.
-    const draft: InviteDraft = {
-      email: trimmed,
-      sentAt: new Date().toISOString(),
-    };
-
-    await AsyncStorage.setItem(INVITE_STORAGE_KEY, JSON.stringify(draft));
-    setInvite(draft);
-    setInfo('Invitation saved on this device. Backend delivery is not connected yet.');
-    setSending(false);
+    try {
+      await send(trimmed);
+      setEmail('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send invitation.');
+    } finally {
+      setSending(false);
+    }
   };
 
-  const handleClearInvite = async () => {
-    await AsyncStorage.removeItem(INVITE_STORAGE_KEY);
-    setInvite(null);
-    setInfo(null);
+  const withPendingAction = async (id: string, fn: () => Promise<void>) => {
+    setPendingActionId(id);
+    try {
+      await fn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Action failed.');
+    } finally {
+      setPendingActionId(null);
+    }
   };
 
+  // Partnered state ─────────────────────────────────────────────────────────
   if (profile?.partner_id) {
-    const partnerName = partner?.name?.split(' ')[0] ?? 'Partner';
-    const youGym = snapshot?.gym?.percent ?? 0;
-    const youStudy = snapshot?.study?.percent ?? 0;
+    return (
+      <PartnerView
+        partner={partner}
+        partnerBundle={partnerBundle}
+        partnerLoading={partnerLoading}
+        partnerError={partnerError}
+        mySnapshot={snapshot}
+        haveOwnBundle={Boolean(bundle)}
+      />
+    );
+  }
 
+  // Incoming invitation state ───────────────────────────────────────────────
+  if (incomingPending.length > 0) {
     return (
       <Screen contentStyle={styles.content}>
-        <Text style={styles.eyebrow}>ACCOUNTABILITY</Text>
-        <Text style={styles.title}>You & {partnerName}</Text>
+        <Text style={styles.eyebrow}>INVITATION</Text>
+        <Text style={styles.title}>You're invited</Text>
         <Text style={styles.subtitle}>
-          {bundle
-            ? `Week ${snapshot?.timeline.weekNumber ?? '—'} of ${snapshot?.timeline.totalWeeks ?? '—'} · ${snapshot?.timeline.daysRemaining ?? '—'} days remaining`
-            : 'Connected'}
+          Accept to sync dashboards and compare pace all semester.
         </Text>
 
-        {partnerError ? (
-          <InfoMessage
-            message={`Partner linked, but shared progress isn’t readable yet. ${partnerError}`}
-          />
-        ) : null}
+        {incomingPending.map((invite, i) => (
+          <AnimatedCard
+            key={invite.id}
+            delay={40 + i * 40}
+            style={styles.cardGap}
+          >
+            <View style={styles.pendingHeader}>
+              <View style={styles.pendingIcon}>
+                <Ionicons name="person" size={22} color={colors.partner} />
+              </View>
+              <View style={styles.pendingCopy}>
+                <Text style={styles.cardTitle}>
+                  {invite.from_name ?? 'Someone'} wants to be your partner
+                </Text>
+                <Text style={styles.body}>
+                  You'll share progress percentages until you unpair.
+                </Text>
+              </View>
+            </View>
+            <View style={styles.inviteActions}>
+              <Button
+                title="Accept"
+                onPress={() =>
+                  void withPendingAction(invite.id, () => accept(invite.id))
+                }
+                loading={pendingActionId === invite.id}
+                style={styles.actionButton}
+              />
+              <Button
+                title="Decline"
+                variant="secondary"
+                onPress={() =>
+                  void withPendingAction(invite.id, () => decline(invite.id))
+                }
+                style={styles.actionButton}
+              />
+            </View>
+          </AnimatedCard>
+        ))}
 
-        {snapshot?.gym ? (
-          <CompareCard
-            title="Gym"
-            deltaLabel="Your gym pace this semester"
-            deltaTone="neutral"
-            youPercent={youGym}
-            // TODO: Replace with partner gym percent once partner progress RLS exists.
-            partnerPercent={youGym}
-            youColor={colors.gym}
-            partnerColor={colors.partner}
-            partnerName={partnerName}
-          />
-        ) : null}
-
-        {snapshot?.study ? (
-          <CompareCard
-            title="Study"
-            deltaLabel="Your study pace this semester"
-            deltaTone="neutral"
-            youPercent={youStudy}
-            // TODO: Replace with partner study percent once partner progress RLS exists.
-            partnerPercent={youStudy}
-            youColor={colors.study}
-            partnerColor={colors.partner}
-            partnerName={partnerName}
-          />
-        ) : null}
-
-        {!snapshot?.gym && !snapshot?.study ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>No tracks to compare yet</Text>
-            <Text style={styles.body}>
-              Add gym or study during a future semester setup to unlock comparison.
-            </Text>
-          </View>
-        ) : null}
+        <ErrorMessage message={error} />
       </Screen>
     );
   }
 
-  if (invite) {
+  // Outgoing pending state ──────────────────────────────────────────────────
+  if (outgoingPending.length > 0) {
+    const invite = outgoingPending[0];
     return (
       <Screen contentStyle={styles.content}>
         <Text style={styles.eyebrow}>ACCOUNTABILITY</Text>
         <Text style={styles.title}>Invitation sent</Text>
         <Text style={styles.subtitle}>
-          Waiting for {invite.email} to accept.
+          Waiting for {invite.to_email} to accept.
         </Text>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Pending partner</Text>
-          <Text style={styles.body}>
-            We’ll show the comparison dashboard here as soon as you’re connected.
-          </Text>
-          <InfoMessage message="TODO: Replace local invite state with Supabase invitation records and realtime acceptance." />
+        <AnimatedCard delay={40} style={styles.cardGap}>
+          <View style={styles.pendingHeader}>
+            <View style={styles.pendingIcon}>
+              <Ionicons name="mail-outline" size={22} color={colors.partner} />
+            </View>
+            <View style={styles.pendingCopy}>
+              <Text style={styles.cardTitle}>Pending partner</Text>
+              <Text style={styles.body}>
+                We'll unlock the comparison dashboard the moment they accept.
+              </Text>
+            </View>
+          </View>
           <Button
             title="Cancel invitation"
             variant="secondary"
-            onPress={() => void handleClearInvite()}
+            loading={pendingActionId === invite.id}
+            onPress={() =>
+              void withPendingAction(invite.id, () => cancel(invite.id))
+            }
           />
-        </View>
+        </AnimatedCard>
+
+        <ErrorMessage message={error} />
       </Screen>
     );
   }
 
+  // Default: send invitation ────────────────────────────────────────────────
   return (
     <Screen contentStyle={styles.content}>
       <Text style={styles.eyebrow}>ACCOUNTABILITY</Text>
-      <Text style={styles.title}>Add a friend</Text>
+      <Text style={styles.title}>Invite a Friend</Text>
       <Text style={styles.subtitle}>
-        Invite an accountability partner to compare gym and study pace.
+        Add one accountability partner to compare gym and study pace all
+        semester.
       </Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Send an invitation</Text>
-        <Text style={styles.body}>
-          Enter their email to invite them to Stride. You’ll both see a shared
-          progress dashboard once they accept.
-        </Text>
+      <AnimatedCard delay={40} style={styles.cardGap}>
+        <View style={styles.inviteHero}>
+          <View style={styles.inviteIcon}>
+            <Ionicons name="people-outline" size={26} color={colors.partner} />
+          </View>
+          <View style={styles.inviteCopy}>
+            <Text style={styles.cardTitle}>Send an invitation</Text>
+            <Text style={styles.body}>
+              Enter their email. If they've already signed up they'll see the
+              invitation instantly; otherwise it'll appear the moment they join.
+            </Text>
+          </View>
+        </View>
 
         <TextInput
           label="Partner email"
@@ -210,16 +247,170 @@ export function FriendTabScreen() {
         />
 
         <ErrorMessage message={error} />
-        <InfoMessage message={info} />
 
         <Button
           title="Send Invitation"
-          onPress={() => void handleSendInvite()}
+          onPress={() => void handleSend()}
           loading={sending}
         />
-      </View>
+      </AnimatedCard>
     </Screen>
   );
+}
+
+type PartnerViewProps = {
+  partner: Profile | null;
+  partnerBundle: SemesterBundle | null;
+  partnerLoading: boolean;
+  partnerError: string | null;
+  mySnapshot: ProgressSnapshot | null;
+  haveOwnBundle: boolean;
+};
+
+function PartnerView({
+  partner,
+  partnerBundle,
+  partnerLoading,
+  partnerError,
+  mySnapshot,
+  haveOwnBundle,
+}: PartnerViewProps) {
+  const partnerFirst = partner?.name?.split(' ')[0] ?? 'Partner';
+
+  const partnerSnapshot: ProgressSnapshot | null = partnerBundle
+    ? buildProgressSnapshot(partnerBundle)
+    : null;
+
+  if (partnerLoading && !partnerBundle) {
+    return (
+      <Screen>
+        <ActivityIndicator size="large" color={colors.textPrimary} />
+      </Screen>
+    );
+  }
+
+  const timeline = mySnapshot?.timeline;
+
+  return (
+    <Screen contentStyle={styles.content}>
+      <Text style={styles.eyebrow}>ACCOUNTABILITY</Text>
+      <Text style={styles.title}>You & {partnerFirst}</Text>
+      <Text style={styles.subtitle}>
+        {timeline
+          ? `Week ${timeline.weekNumber} of ${timeline.totalWeeks} · ${timeline.daysRemaining} days remaining`
+          : 'Connected'}
+      </Text>
+
+      {partnerError ? (
+        <AnimatedCard delay={40} style={styles.cardGap}>
+          <Text style={styles.cardTitle}>Partner data unavailable</Text>
+          <Text style={styles.body}>{partnerError}</Text>
+        </AnimatedCard>
+      ) : null}
+
+      {mySnapshot?.gym ? (
+        <CompareCard
+          delay={40}
+          title="Gym"
+          deltaLabel={paceDeltaLabel(
+            'workout',
+            mySnapshot.gym.percent,
+            partnerSnapshot?.gym?.percent ?? null,
+            partnerFirst,
+          )}
+          deltaTone={toneFromDelta(
+            mySnapshot.gym.percent,
+            partnerSnapshot?.gym?.percent ?? null,
+          )}
+          deltaPercent={
+            partnerSnapshot?.gym
+              ? mySnapshot.gym.percent - partnerSnapshot.gym.percent
+              : null
+          }
+          youPercent={mySnapshot.gym.percent}
+          partnerPercent={partnerSnapshot?.gym?.percent ?? null}
+          youColor={colors.gym}
+          partnerColor={colors.partner}
+          partnerName={partnerFirst}
+        />
+      ) : null}
+
+      {mySnapshot?.study ? (
+        <CompareCard
+          delay={80}
+          title="Study"
+          deltaLabel={paceDeltaLabel(
+            'session',
+            mySnapshot.study.percent,
+            partnerSnapshot?.study?.percent ?? null,
+            partnerFirst,
+          )}
+          deltaTone={toneFromDelta(
+            mySnapshot.study.percent,
+            partnerSnapshot?.study?.percent ?? null,
+          )}
+          deltaPercent={
+            partnerSnapshot?.study
+              ? mySnapshot.study.percent - partnerSnapshot.study.percent
+              : null
+          }
+          youPercent={mySnapshot.study.percent}
+          partnerPercent={partnerSnapshot?.study?.percent ?? null}
+          youColor={colors.study}
+          partnerColor={colors.partner}
+          partnerName={partnerFirst}
+        />
+      ) : null}
+
+      {!mySnapshot?.gym && !mySnapshot?.study ? (
+        <AnimatedCard delay={40} style={styles.cardGap}>
+          <Text style={styles.cardTitle}>No tracks to compare yet</Text>
+          <Text style={styles.body}>
+            {haveOwnBundle
+              ? 'Add gym or study in a future semester to unlock comparison.'
+              : 'Your comparison unlocks once you have an active semester.'}
+          </Text>
+        </AnimatedCard>
+      ) : null}
+
+      {!partnerSnapshot && !partnerLoading && !partnerError ? (
+        <AnimatedCard delay={120} style={styles.cardGap}>
+          <Text style={styles.cardTitle}>{partnerFirst} isn't in a semester</Text>
+          <Text style={styles.body}>
+            Comparison numbers appear once {partnerFirst}'s semester is active.
+          </Text>
+        </AnimatedCard>
+      ) : null}
+    </Screen>
+  );
+}
+
+function toneFromDelta(
+  you: number,
+  partner: number | null,
+): 'ahead' | 'behind' | 'neutral' {
+  if (partner === null) return 'neutral';
+  const d = you - partner;
+  if (d > 0) return 'ahead';
+  if (d < 0) return 'behind';
+  return 'neutral';
+}
+
+function paceDeltaLabel(
+  unit: 'workout' | 'session',
+  youPercent: number,
+  partnerPercent: number | null,
+  partnerName: string,
+): string {
+  if (partnerPercent === null) {
+    return `Shared partner pace unlocks once ${partnerName}'s semester is active`;
+  }
+  const delta = youPercent - partnerPercent;
+  if (delta === 0) return `Even with ${partnerName}`;
+  const abs = Math.abs(delta);
+  return delta > 0
+    ? `${abs}% ahead of ${partnerName}`
+    : `${abs}% behind ${partnerName}`;
 }
 
 const styles = StyleSheet.create({
@@ -240,16 +431,8 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: spacing.sm,
   },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.xxl,
-    padding: spacing.xxl,
+  cardGap: {
     gap: spacing.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 3,
   },
   cardTitle: {
     ...typography.cardTitle,
@@ -258,5 +441,46 @@ const styles = StyleSheet.create({
   body: {
     ...typography.body,
     color: colors.textSecondary,
+  },
+  inviteHero: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+  },
+  inviteIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: radii.full,
+    backgroundColor: colors.partnerAvatar,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inviteCopy: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  pendingHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+  },
+  pendingIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.full,
+    backgroundColor: colors.partnerAvatar,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pendingCopy: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  inviteActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  actionButton: {
+    flex: 1,
   },
 });

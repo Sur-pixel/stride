@@ -79,12 +79,12 @@ export function FinishScreen() {
           {data.tracks.includes('study') ? (
             <>
               <SummaryRow
-                label="Courses"
-                value={data.courseNames.filter(Boolean).join(', ') || '—'}
+                label="Courses (hardest → easiest)"
+                value={data.courseNames.filter(Boolean).join(' · ') || '—'}
               />
               <SummaryRow
                 label="Sessions"
-                value={`${data.studySessionsPerWeek} / week`}
+                value={`${data.studySessionsPerWeek} / week (weighted by difficulty)`}
               />
             </>
           ) : null}

@@ -8,7 +8,10 @@ import {
 } from 'react';
 import { useAuth } from './AuthContext';
 import { useProfile } from './ProfileContext';
-import { persistOnboarding } from '../services/onboardingService';
+import {
+  distributeWeeklySessionsByDifficulty,
+  persistOnboarding,
+} from '../services/onboardingService';
 
 export type TrackType = 'gym' | 'study';
 
@@ -42,6 +45,10 @@ export type OnboardingData = {
   workoutDays: DayOfWeek[];
   courseLoad: CourseLoad | null;
   studySessionsPerWeek: number;
+  /**
+   * Course names in DIFFICULTY ORDER. Index 0 is hardest, last is easiest.
+   * The difficulty rank of a course = its position in this array + 1.
+   */
   courseNames: string[];
 };
 
@@ -60,6 +67,8 @@ type OnboardingContextValue = {
   setCourseLoad: (load: CourseLoad) => void;
   setStudySessionsPerWeek: (sessions: number) => void;
   setCourseName: (index: number, name: string) => void;
+  moveCourseUp: (index: number) => void;
+  moveCourseDown: (index: number) => void;
   completeOnboarding: () => Promise<CompleteOnboardingResult>;
   resetOnboarding: () => void;
 };
@@ -72,7 +81,7 @@ const initialData: OnboardingData = {
   gymDaysPerWeek: null,
   workoutDays: [],
   courseLoad: null,
-  studySessionsPerWeek: 5,
+  studySessionsPerWeek: 0,
   courseNames: [],
 };
 
@@ -151,20 +160,25 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
         { length: load },
         (_, index) => prev.courseNames[index] ?? '',
       );
+      const suggested = Math.max(load, prev.studySessionsPerWeek || load * 3);
 
       return {
         ...prev,
         courseLoad: load,
         courseNames: nextNames,
+        studySessionsPerWeek: suggested,
       };
     });
   }, []);
 
   const setStudySessionsPerWeek = useCallback((sessions: number) => {
-    setData((prev) => ({
-      ...prev,
-      studySessionsPerWeek: Math.min(14, Math.max(1, sessions)),
-    }));
+    setData((prev) => {
+      const minimum = Math.max(1, prev.courseNames.length);
+      return {
+        ...prev,
+        studySessionsPerWeek: Math.min(35, Math.max(minimum, sessions)),
+      };
+    });
   }, []);
 
   const setCourseName = useCallback((index: number, name: string) => {
@@ -172,6 +186,24 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
       const nextNames = [...prev.courseNames];
       nextNames[index] = name;
       return { ...prev, courseNames: nextNames };
+    });
+  }, []);
+
+  const moveCourseUp = useCallback((index: number) => {
+    setData((prev) => {
+      if (index <= 0 || index >= prev.courseNames.length) return prev;
+      const next = [...prev.courseNames];
+      [next[index - 1], next[index]] = [next[index], next[index - 1]];
+      return { ...prev, courseNames: next };
+    });
+  }, []);
+
+  const moveCourseDown = useCallback((index: number) => {
+    setData((prev) => {
+      if (index < 0 || index >= prev.courseNames.length - 1) return prev;
+      const next = [...prev.courseNames];
+      [next[index + 1], next[index]] = [next[index], next[index + 1]];
+      return { ...prev, courseNames: next };
     });
   }, []);
 
@@ -208,6 +240,8 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
       setCourseLoad,
       setStudySessionsPerWeek,
       setCourseName,
+      moveCourseUp,
+      moveCourseDown,
       completeOnboarding,
       resetOnboarding,
     }),
@@ -222,6 +256,8 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
       setCourseLoad,
       setStudySessionsPerWeek,
       setCourseName,
+      moveCourseUp,
+      moveCourseDown,
       completeOnboarding,
       resetOnboarding,
     ],
@@ -242,6 +278,24 @@ export function useOnboarding() {
   }
 
   return context;
+}
+
+/**
+ * Live allocation preview: given the current course names + weekly total,
+ * returns the difficulty-weighted weekly sessions per course. Length matches
+ * `courseNames`.
+ */
+export function useAllocationPreview(data: OnboardingData): number[] {
+  return useMemo(() => {
+    if (!data.tracks.includes('study') || data.courseNames.length === 0) {
+      return [];
+    }
+    const ranks = data.courseNames.map((_, i) => i + 1);
+    return distributeWeeklySessionsByDifficulty(
+      ranks,
+      data.studySessionsPerWeek || data.courseNames.length,
+    );
+  }, [data.tracks, data.courseNames, data.studySessionsPerWeek]);
 }
 
 /** Human-readable duration derived from start/end dates. */
